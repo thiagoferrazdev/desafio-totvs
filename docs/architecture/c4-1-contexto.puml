@@ -1,0 +1,22 @@
+@startuml c4-1-contexto
+!pragma layout smetana
+!include <C4/C4_Context>
+
+title C4 nível 1 — Contexto do sistema CaseCellShop
+
+Person(cliente, "Cliente", "Navega na vitrine, compra capinhas e acompanha o pedido")
+Person(operacao, "Time de operação / SRE", "Recebe alertas, acompanha SLOs e segue os runbooks")
+
+System(loja, "CaseCellShop (backend da loja)", "Catálogo com cache, checkout assíncrono com reserva de estoque e status do pedido")
+
+System_Ext(erp, "ERP Central", "Monolito: estoque, faturamento, financeiro e contábil. API REST síncrona + MySQL só leitura. Não pode ser alterado")
+System_Ext(datadog, "Datadog ou equivalente", "Logs, métricas, traces, SLOs, alertas e dashboards")
+
+Rel(cliente, loja, "Consulta produtos, faz checkout e consulta status", "HTTPS/JSON")
+Rel(loja, erp, "Lê catálogo e fatura pedidos", "REST síncrono")
+Rel(loja, erp, "Confere faturas e alterações", "SQL somente leitura")
+Rel(loja, datadog, "Envia logs, métricas e traces", "correlationId, orderId, traceparent")
+Rel(operacao, datadog, "Monitora e é alertado")
+
+SHOW_LEGEND()
+@enduml

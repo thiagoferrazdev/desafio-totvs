@@ -1,0 +1,86 @@
+@startuml sequencia-checkout
+title CaseCellShop — checkout assíncrono (outbox, retry, DLQ e reconciliação)
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+autonumber
+
+actor Cliente
+participant "CheckoutController\nPlaceOrderHandler" as Checkout
+database "InMemoryStoreDatabase" as StoreDb
+participant "PublishOutboxEventsHandler" as Outbox
+queue "InMemoryQueue" as Queue
+participant "OrderInvoicingConsumer\nInvoiceOrderHandler" as Worker
+participant "ERP API REST" as ErpApi
+database "MySQL do ERP\n(somente leitura)" as ErpDb
+participant "ReconcileOpenOrdersHandler" as Reconciliation
+participant "OrderStatusController" as Status
+
+== Aceite do pedido (síncrono) ==
+Cliente -> Checkout : POST /checkout + Idempotency-Key
+Checkout -> StoreDb : reserveStockAndCreateOrder
+note right of StoreDb
+  uma única operação atômica:
+  idempotency key + reserva de estoque
+  + pedido ACCEPTED + evento no outbox
+end note
+alt mesma chave e mesmo payload
+  StoreDb --> Checkout : pedido já existente
+  Checkout --> Cliente : 202 (idempotent-replayed: true)
+else sem estoque
+  StoreDb --> Checkout : out_of_stock
+  Checkout --> Cliente : 409 OUT_OF_STOCK
+else pedido criado
+  StoreDb --> Checkout : order_created
+  Checkout --> Cliente : 202 {orderId, status: ACCEPTED}
+end
+
+== Publicação (depois do commit) ==
+Outbox -> StoreDb : listUnpublishedOutboxEvents
+Outbox -> Queue : publish(orderId, correlationId, traceparent)
+Outbox -> StoreDb : markOutboxEventAsPublished
+
+== Faturamento (assíncrono) ==
+Queue -> Worker : mensagem (at-least-once)
+Worker -> StoreDb : claimInvoicingAttempt
+alt outra entrega já reivindicou a tentativa
+  Worker -> Worker : ignora a mensagem
+else tentativa reivindicada (PROCESSING)
+  opt não é a primeira tentativa
+    Worker -> ErpDb : findInvoiceInErpDatabaseByOrderId
+  end
+  alt fatura já existe no ERP
+    Worker -> StoreDb : CONFIRMED (sem refaturar)
+  else
+    Worker -> ErpApi : createInvoice
+    alt sucesso
+      Worker -> StoreDb : CONFIRMED (reserva vira venda)
+    else ERP recusou (erro definitivo)
+      Worker -> StoreDb : FAILED (estoque devolvido)
+    else timeout / 5xx (resultado ambíguo)
+      alt ainda há tentativas
+        Worker -> Queue : republica com backoff + jitter
+      else tentativas esgotadas
+        Worker -> Queue : moveToDeadLetterQueue
+        Worker -> StoreDb : NEEDS_RECONCILIATION (estoque continua reservado)
+      end
+    end
+  end
+end
+
+== Reconciliação (periódica) ==
+Reconciliation -> StoreDb : pedidos NEEDS_RECONCILIATION ou parados
+Reconciliation -> ErpDb : findInvoiceInErpDatabaseByOrderId
+alt fatura existe
+  Reconciliation -> StoreDb : CONFIRMED
+else não existe e ainda dentro do prazo
+  Reconciliation -> StoreDb : ACCEPTED
+  Reconciliation -> Queue : reenvia para faturamento
+else não existe e prazo esgotado
+  Reconciliation -> StoreDb : FAILED (libera estoque)
+end
+
+== Acompanhamento ==
+Cliente -> Status : GET /orders/{orderId}/status
+Status -> StoreDb : findOrderById
+Status --> Cliente : ACCEPTED | PROCESSING | CONFIRMED | FAILED | NEEDS_RECONCILIATION
+@enduml

@@ -1,0 +1,602 @@
+{
+  "info": {
+    "name": "CaseCellShop API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Run against a FRESH server (npm start): the seed stock is consumed by folders 2 and 4. Run order: Collection Runner, top to bottom."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "idemKey",
+      "value": ""
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Catalog",
+      "item": [
+        {
+          "name": "GET /products (cache miss)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"items have price and live availability\", () => { const i = pm.response.json().items; pm.expect(i.length).to.be.above(0); pm.expect(i[0]).to.have.keys(\"sku\",\"name\",\"price\",\"available\",\"inStock\"); });",
+                  "pm.test(\"X-Cache header present\", () => pm.expect(pm.response.headers.has(\"x-cache\")).to.be.true);",
+                  "pm.test(\"correlation id echoed\", () => pm.expect(pm.response.headers.has(\"x-correlation-id\")).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products (cache hit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"served from cache\", () => pm.expect([\"hit\",\"stale\"]).to.include(pm.response.headers.get(\"x-cache\")));",
+                  "pm.test(\"fast (< 100ms)\", () => pm.expect(pm.response.responseTime).to.be.below(100));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Checkout",
+      "item": [
+        {
+          "name": "POST /checkout (accepted)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "X-Correlation-Id",
+                "value": "postman-{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-IPH15-BLK\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"idemKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 Accepted\", () => pm.response.to.have.status(202));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"orderId + status + locked total\", () => { pm.expect(b.orderId).to.be.a(\"string\"); pm.expect(b.status).to.eql(\"ACCEPTED\"); pm.expect(b.total).to.eql(2 * 7990); });",
+                  "pm.test(\"Location points to status\", () => pm.expect(pm.response.headers.get(\"location\")).to.eql(`/orders/${b.orderId}/status`));",
+                  "pm.test(\"correlation id propagated\", () => pm.expect(pm.response.headers.get(\"x-correlation-id\")).to.include(\"postman-\"));",
+                  "pm.collectionVariables.set(\"orderId\", b.orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /checkout (replay same key = same order)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-IPH15-BLK\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"same orderId (no double reservation)\", () => pm.expect(pm.response.json().orderId).to.eql(pm.collectionVariables.get(\"orderId\")));",
+                  "pm.test(\"flagged as replay\", () => pm.expect(pm.response.headers.get(\"idempotent-replayed\")).to.eql(\"true\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /checkout (same key, different payload = 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-IPH15-BLK\",\n      \"quantity\": 5\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error envelope\", () => { const b = pm.response.json(); pm.expect(b.error.code).to.eql(\"IDEMPOTENCY_KEY_REUSED\"); pm.expect(b.correlationId).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /checkout (missing Idempotency-Key = 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-IPH15-BLK\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"code\", () => pm.expect(pm.response.json().error.code).to.eql(\"IDEMPOTENCY_KEY_REQUIRED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /checkout (invalid body = 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-IPH15-BLK\",\n      \"quantity\": 0\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 VALIDATION_ERROR\", () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error.code).to.eql(\"VALIDATION_ERROR\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /checkout (unknown sku = 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"NOPE\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 UNKNOWN_SKU\", () => { pm.response.to.have.status(422); pm.expect(pm.response.json().error.code).to.eql(\"UNKNOWN_SKU\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /checkout (out of stock = 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-PX8-BLU\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 OUT_OF_STOCK\", () => { pm.response.to.have.status(409); const e = pm.response.json().error; pm.expect(e.code).to.eql(\"OUT_OF_STOCK\"); pm.expect(e.details.available).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Order status",
+      "item": [
+        {
+          "name": "GET /orders/{id}/status (converges to CONFIRMED)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}",
+                "status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"schema\", () => pm.expect(b).to.include.keys(\"orderId\",\"status\",\"attempts\",\"updatedAt\"));",
+                  "pm.test(\"status is a known state\", () => pm.expect([\"ACCEPTED\",\"PROCESSING\",\"CONFIRMED\",\"FAILED\",\"NEEDS_RECONCILIATION\"]).to.include(b.status));",
+                  "if ([\"ACCEPTED\",\"PROCESSING\"].includes(b.status)) { setTimeout(()=>{}, 500); pm.execution.setNextRequest(pm.info.requestName); } else { pm.test(\"CONFIRMED with invoice\", () => { pm.expect(b.status).to.eql(\"CONFIRMED\"); pm.expect(b.invoiceId).to.match(/^INV-/); }); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /orders/{id}/status (unknown = 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/00000000-0000-0000-0000-000000000000/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "00000000-0000-0000-0000-000000000000",
+                "status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 envelope\", () => { pm.response.to.have.status(404); pm.expect(pm.response.json().error.code).to.eql(\"ORDER_NOT_FOUND\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Concurrency (no overselling)",
+      "item": [
+        {
+          "name": "Reserve CASE-S24-CLR x3 (all of the stock)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c2\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-S24-CLR\",\n      \"quantity\": 3\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 (stock was 3)\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next buyer of CASE-S24-CLR gets 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"c3\",\n  \"items\": [\n    {\n      \"sku\": \"CASE-S24-CLR\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409, never oversold\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products shows live availability 0",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"S24 available = 0 even if price is cached\", () => pm.expect(pm.response.json().items.find(i => i.sku === \"CASE-S24-CLR\").available).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Ops",
+      "item": [
+        {
+          "name": "GET /metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "metrics"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.text();",
+                  "pm.test(\"cache, checkout, queue and invariant metrics exposed\", () => [\"cache_requests_total\",\"checkout_requests_total\",\"queue_depth\",\"oversell_invariant_violations_total\",\"order_confirmation_seconds\"].forEach(m => pm.expect(t).to.include(m)));",
+                  "pm.test(\"no overselling\", () => pm.expect(t).to.not.match(/oversell_invariant_violations_total \\d*[1-9]/));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

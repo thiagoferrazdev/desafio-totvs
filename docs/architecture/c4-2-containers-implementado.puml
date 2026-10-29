@@ -1,0 +1,40 @@
+@startuml c4-2-containers-implementado
+!pragma layout smetana
+!include <C4/C4_Container>
+
+title C4 nível 2 — Containers como implementados no repositório
+
+Person(cliente, "Cliente")
+
+System_Boundary(loja, "CaseCellShop (um processo Node.js)") {
+  Container(api, "API HTTP", "NestJS / TypeScript", "GET /products, POST /checkout, GET /orders/{orderId}/status, GET /metrics")
+  Container(worker, "Worker de faturamento", "OrderInvoicingConsumer + InvoiceOrderHandler", "Consome a fila, fatura no ERP com retry/backoff e manda para a DLQ")
+  Container(outbox, "Outbox publisher", "PeriodicJob + PublishOutboxEventsHandler", "Publica na fila os eventos gravados junto com o pedido")
+  Container(reconciliacao, "Job de reconciliação", "PeriodicJob + ReconcileOpenOrdersHandler", "Confere no ERP pedidos parados ou em NEEDS_RECONCILIATION")
+  ContainerDb(storeDb, "Banco da loja", "Em memória (InMemoryStoreDatabase)", "Estoque disponível/reservado, pedidos, idempotency keys, outbox")
+  ContainerQueue(fila, "Fila + DLQ", "Em memória (InMemoryQueue)", "Mensagens order.accepted, at-least-once")
+}
+
+System_Boundary(erp, "ERP Central (simulado por SimulatedErp)") {
+  Container_Ext(erpApi, "API REST do ERP", "REST síncrono", "listProducts, createInvoice (não idempotente)")
+  ContainerDb_Ext(erpDb, "MySQL do ERP", "Somente leitura", "Faturas consultadas por orderId")
+}
+
+System_Ext(observabilidade, "Datadog ou equivalente", "Coleta /metrics, logs JSON e traces")
+
+Rel(cliente, api, "Usa", "HTTPS/JSON")
+Rel(api, storeDb, "Reserva estoque + cria pedido + outbox (atômico); lê disponibilidade e status")
+Rel(api, erpApi, "Lista produtos no miss do cache", "REST")
+Rel(outbox, storeDb, "Lê eventos pendentes")
+Rel(outbox, fila, "Publica")
+Rel(fila, worker, "Entrega")
+Rel(worker, storeDb, "claimInvoicingAttempt / changeOrderStatus")
+Rel(worker, erpApi, "createInvoice", "REST")
+Rel(worker, erpDb, "No retry: fatura já existe?", "SQL")
+Rel(reconciliacao, storeDb, "Pedidos pendentes")
+Rel(reconciliacao, erpDb, "Fatura existe?", "SQL")
+Rel(reconciliacao, fila, "Reenvia")
+Rel(api, observabilidade, "Métricas, logs e traces")
+
+SHOW_LEGEND()
+@enduml

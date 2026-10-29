@@ -1,0 +1,66 @@
+@startuml c4-3-componentes
+!pragma layout smetana
+!include <C4/C4_Component>
+
+title C4 nível 3 — Componentes do serviço por camada (Clean Architecture)
+
+Person(cliente, "Cliente")
+
+Container_Boundary(interfaces, "interfaces (adaptadores de entrada, NestJS)") {
+  Component(controllers, "Controllers HTTP", "ProductsController, CheckoutController, OrderStatusController, MetricsController", "Traduzem HTTP em commands e queries")
+  Component(errorFactory, "CheckoutErrorFactory", "Factory", "Rejeição de checkout -> erro HTTP (409/422/503)")
+  Component(consumer, "OrderInvoicingConsumer", "Consumidor da fila", "Abre contexto e trace da mensagem e executa InvoiceOrderCommand")
+  Component(jobs, "PeriodicJob", "Agendador", "Publicação do outbox e reconciliação em intervalo")
+}
+
+Container_Boundary(application, "application (casos de uso, sem framework)") {
+  Component(placeOrder, "PlaceOrderHandler", "Command", "Preço do catálogo + reserva atômica + outbox")
+  Component(invoiceOrder, "InvoiceOrderHandler", "Command", "claimInvoicingAttempt, consulta prévia ao ERP, fatura")
+  Component(failureChain, "Cadeia de falhas", "Chain of Responsibility", "RejectedByErp -> RetryLater -> SendToDeadLetterQueue")
+  Component(retry, "RetryPolicy", "Strategy", "ExponentialBackoffWithFullJitter")
+  Component(reconcile, "ReconcileOpenOrdersHandler", "Command", "Confirma, reenvia ou libera estoque")
+  Component(publishOutbox, "PublishOutboxEventsHandler", "Command", "Publica eventos do outbox na fila")
+  Component(queries, "ListCatalogHandler, GetOrderStatusHandler", "Queries", "Vitrine com disponibilidade ao vivo e status do pedido")
+  Component(ports, "Ports", "Classes abstratas", "OrderRepository, OutboxRepository, StockLevels, OrderQueue, InvoicingGateway, ProductCatalog, Clock")
+}
+
+Container_Boundary(domain, "domain (regras de negócio puras)") {
+  Component(order, "Order + OrderFactory", "Entidade + Factory", "Status e regras do pedido")
+  Component(stock, "ProductStock", "Value object", "Reserva, confirma, devolve e checa a invariante")
+}
+
+Container_Boundary(infrastructure, "infrastructure (adaptadores de saída)") {
+  ComponentDb(storeDb, "InMemoryStoreDatabase", "OrderRepository, OutboxRepository, StockLevels", "Reserva atômica, idempotência e outbox")
+  ComponentQueue(fila, "InMemoryQueue", "OrderQueue", "Fila + DLQ")
+  Component(catalogAdapter, "CachedErpProductCatalog", "ProductCatalog", "StaleWhileRevalidateCache na frente do ERP")
+  Component(erpAdapter, "SimulatedErp", "InvoicingGateway", "listProducts, createInvoice, findInvoiceInErpDatabaseByOrderId")
+}
+
+System_Ext(erp, "ERP Central", "API REST + MySQL só leitura")
+
+Rel(cliente, controllers, "HTTPS/JSON")
+Rel(controllers, placeOrder, "PlaceOrderCommand")
+Rel(controllers, queries, "Queries")
+Rel(controllers, errorFactory, "rejeições")
+Rel(consumer, invoiceOrder, "InvoiceOrderCommand")
+Rel(jobs, publishOutbox, "PublishOutboxEventsCommand")
+Rel(jobs, reconcile, "ReconcileOpenOrdersCommand")
+Rel(placeOrder, publishOutbox, "após reservar")
+Rel(invoiceOrder, failureChain, "falha do ERP")
+Rel(failureChain, retry, "ainda há tentativas?")
+Rel(placeOrder, ports, "usa")
+Rel(invoiceOrder, ports, "usa")
+Rel(reconcile, ports, "usa")
+Rel(queries, ports, "usa")
+Rel(application, domain, "depende de")
+Rel(storeDb, ports, "implementa")
+Rel(fila, ports, "implementa")
+Rel(catalogAdapter, ports, "implementa")
+Rel(erpAdapter, ports, "implementa")
+Rel(storeDb, stock, "usa")
+Rel(storeDb, order, "usa OrderFactory")
+Rel(catalogAdapter, erpAdapter, "listProducts no miss")
+Rel(erpAdapter, erp, "simula")
+
+SHOW_LEGEND()
+@enduml

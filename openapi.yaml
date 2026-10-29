@@ -1,0 +1,128 @@
+openapi: 3.0.3
+info:
+  title: CaseCellShop API
+  version: 1.0.0
+  description: Catalog with cache, asynchronous checkout and order status.
+paths:
+  /products:
+    get:
+      summary: List products (cached price, live availability)
+      responses:
+        "200":
+          description: Product list
+          headers:
+            X-Cache: { schema: { type: string, enum: [hit, stale, miss, stale_if_error] } }
+            Age: { schema: { type: integer }, description: Seconds since the price snapshot was fetched from the ERP }
+            X-Correlation-Id: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Product" } }
+        "503": { $ref: "#/components/responses/Error" }
+  /checkout:
+    post:
+      summary: Start an asynchronous checkout (stock is reserved synchronously, billing is async)
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+          description: Client-generated unique key per purchase intent (e.g. UUID). Same key + same payload returns the same order.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckoutRequest" }
+      responses:
+        "202":
+          description: Accepted. Poll the status URL in Location. `Idempotent-Replayed - true` is set on a replay.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutAccepted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /orders/{orderId}/status:
+    get:
+      summary: Order processing status
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderStatus" }
+        "404": { $ref: "#/components/responses/Error" }
+components:
+  responses:
+    Error:
+      description: |
+        Error envelope. Codes: VALIDATION_ERROR, IDEMPOTENCY_KEY_REQUIRED (400); OUT_OF_STOCK (409);
+        UNKNOWN_SKU, IDEMPOTENCY_KEY_REUSED (422); ORDER_NOT_FOUND (404); CATALOG_UNAVAILABLE, PRICING_UNAVAILABLE (503).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Product:
+      type: object
+      required: [sku, name, price, available, inStock]
+      properties:
+        sku: { type: string }
+        name: { type: string }
+        price: { type: integer, description: Price in cents }
+        available: { type: integer, minimum: 0 }
+        inStock: { type: boolean }
+    CheckoutRequest:
+      type: object
+      required: [customerId, items]
+      properties:
+        customerId: { type: string, maxLength: 64 }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            required: [sku, quantity]
+            properties:
+              sku: { type: string }
+              quantity: { type: integer, minimum: 1, maximum: 10 }
+    CheckoutAccepted:
+      type: object
+      required: [orderId, status, total]
+      properties:
+        orderId: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/Status" }
+        total: { type: integer, description: Cents, price locked at acceptance }
+    Status:
+      type: string
+      enum: [ACCEPTED, PROCESSING, CONFIRMED, FAILED, NEEDS_RECONCILIATION]
+    OrderStatus:
+      type: object
+      required: [orderId, status, attempts, updatedAt]
+      properties:
+        orderId: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/Status" }
+        attempts: { type: integer }
+        invoiceId: { type: string }
+        failureReason: { type: string }
+        updatedAt: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [error, correlationId]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+        correlationId: { type: string }

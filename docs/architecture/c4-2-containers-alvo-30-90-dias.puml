@@ -1,0 +1,46 @@
+@startuml c4-2-containers-alvo
+!pragma layout smetana
+!include <C4/C4_Container>
+
+title C4 nível 2 — Containers da arquitetura alvo (30 a 90 dias)
+
+Person(cliente, "Cliente")
+
+System_Boundary(loja, "CaseCellShop") {
+  Container(api, "API da loja", "Node.js / NestJS", "Catálogo, checkout (202) e status do pedido. Cache L1 em memória")
+  ContainerDb(redis, "Cache L2", "Redis", "Catálogo compartilhado entre instâncias + lock de single-flight")
+  ContainerDb(storeDb, "Banco da loja", "PostgreSQL", "Produtos e preços (cópia), saldo disponível/reservado, pedidos, idempotency keys, outbox")
+  Container(sync, "Sincronização com o ERP", "Job agendado", "Polling por updated_at + carga completa diária; invalida o cache")
+  Container(outbox, "Outbox publisher", "Job", "Publica eventos commitados na fila")
+  ContainerQueue(fila, "Fila + DLQ", "SQS / RabbitMQ", "order.accepted, at-least-once, redrive para DLQ")
+  Container(workers, "Workers de faturamento", "Node.js", "Faturam no ERP com retry + backoff + jitter")
+  Container(reconciliacao, "Reconciliação", "Job agendado", "Confere faturas e estoque com o ERP; confirma, reenvia ou libera estoque")
+}
+
+System_Boundary(erp, "ERP Central (não pode ser alterado)") {
+  Container_Ext(erpApi, "API REST do ERP", "REST síncrono", "Faturamento")
+  ContainerDb_Ext(erpDb, "MySQL do ERP", "Somente leitura", "Produtos, preços, estoque e faturas")
+}
+
+System_Ext(datadog, "Datadog ou equivalente", "Logs, métricas, traces, SLOs, alertas e runbooks")
+
+Rel(cliente, api, "Usa", "HTTPS/JSON")
+Rel(api, redis, "Lê catálogo (miss do L1)")
+Rel(api, storeDb, "Reserva atômica + pedido + outbox (mesma transação)", "SQL")
+Rel(sync, erpDb, "Lê alterações", "SQL")
+Rel(sync, storeDb, "Atualiza produtos, preços e estoque base", "SQL")
+Rel(sync, redis, "Invalida chaves")
+Rel(outbox, storeDb, "Lê pendentes", "SQL")
+Rel(outbox, fila, "Publica")
+Rel(fila, workers, "Entrega")
+Rel(workers, erpApi, "Fatura o pedido", "REST")
+Rel(workers, erpDb, "No retry: fatura já existe?", "SQL")
+Rel(workers, storeDb, "Confirma / falha / NEEDS_RECONCILIATION", "SQL")
+Rel(reconciliacao, erpDb, "Confere faturas e estoque", "SQL")
+Rel(reconciliacao, storeDb, "Confirma ou libera estoque", "SQL")
+Rel(reconciliacao, fila, "Reenvia")
+Rel(api, datadog, "Logs, métricas e traces")
+Rel(workers, datadog, "Logs, métricas e traces")
+
+SHOW_LEGEND()
+@enduml
